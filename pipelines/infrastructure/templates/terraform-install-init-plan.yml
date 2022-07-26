@@ -1,0 +1,95 @@
+# Define parameters to be passed in.
+parameters:
+  - name: terraformVersion
+    default: ''
+  - name: terraformHome
+    default: /tmp
+  - name: ServiceConnection
+    default: ''
+  - name: Environment
+    default: ''
+
+jobs:
+  - job: ${{ parameters.Environment }}_plan
+    displayName: '${{ parameters.Environment }} Terraform Plan'
+    condition: and(succeeded(), in(variables['Build.Reason'], 'PullRequest', 'IndividualCI', 'BatchedCI', 'Manual'))
+    steps:
+
+      # Get subscription info that Terraform needs and store it in environmental variables.
+      # https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/service_principal_client_secret#configuring-the-service-principal-in-terraform
+      - task: AzureCLI@2
+        displayName: 'Set Authentication Variables'
+        inputs:
+          azureSubscription: ${{ parameters.ServiceConnection }}
+          scriptType: 'pscore'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            $subscriptionId = (az account list | ConvertFrom-Json | Where-Object -Property isDefault -Value true -EQ).id
+            Write-Output "##vso[task.setvariable variable=CLIENT_ID;isSecret=true;isOutput=false]$Env:servicePrincipalId"
+            Write-Output "##vso[task.setvariable variable=CLIENT_SECRET;isSecret=true;isOutput=false]$Env:servicePrincipalKey"
+            Write-Output "##vso[task.setvariable variable=TENANT_ID;isSecret=false;isOutput=false]$Env:tenantId"
+            Write-Output "##vso[task.setvariable variable=SUBSCRIPTION_ID;isSecret=false;isOutput=false]$subscriptionId"
+          addSpnToEnvironment: true
+          useGlobalConfig: true
+
+      # Download the specified version of Terraform and unzip it.
+      - task: Bash@3
+        displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
+        inputs:
+          targetType: 'inline'
+          script: |
+            echo "Downloading from: https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion}}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip"
+            echo "Destination: ${{ parameters.terraformHome }}/terraform.zip"
+            curl https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip --output ${{ parameters.terraformHome }}/terraform.zip
+            unzip -o ${{ parameters.terraformHome }}/terraform.zip -d ${{ parameters.terraformHome }}
+
+      # Run Terraform Init. We pass the Instance ID as the container name for the state file(s) so that we can keep the state files for instance seperate.
+      - task: Bash@3
+        displayName: 'Terraform Init'
+        inputs:
+          workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+          targetType: 'inline'
+          script: |
+            echo "${{ parameters.terraformHome }}/terraform init \
+            -backend-config="key=${{ parameters.Environment }}.terraform.tfstate" \
+            -no-color"
+
+            ${{ parameters.terraformHome }}/terraform init \
+            -backend-config="key=${{ parameters.Environment }}.terraform.tfstate" \
+            -no-color
+        env:
+          ARM_CLIENT_ID: $(CLIENT_ID)
+          ARM_CLIENT_SECRET: $(CLIENT_SECRET)
+          ARM_TENANT_ID: $(TENANT_ID)
+          ARM_SUBSCRIPTION_ID: $(SUBSCRIPTION_ID)
+
+      # Run Terraform Plan. Output the plan file to the artifact staging directory.
+      - task: Bash@3
+        displayName: 'Terraform Plan'
+        inputs:
+          workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+          targetType: 'inline'
+          script: |
+            echo "${{ parameters.terraformHome }}/terraform plan \
+            -var-file="$(System.DefaultWorkingDirectory)/terraform/env/${{ parameters.Environment }}.tfvars" \
+            -out=$(Build.ArtifactStagingDirectory)/${{ parameters.Environment }}.tfplan \
+            -no-color \
+            -input=false"
+
+            ${{ parameters.terraformHome }}/terraform plan \
+            -var-file="$(System.DefaultWorkingDirectory)/terraform/env/${{ parameters.Environment }}.tfvars" \
+            -out=$(Build.ArtifactStagingDirectory)/${{ parameters.Environment }}.tfplan \
+            -no-color \
+            -input=false
+        env:
+          ARM_CLIENT_ID: $(CLIENT_ID)
+          ARM_CLIENT_SECRET: $(CLIENT_SECRET)
+          ARM_TENANT_ID: $(TENANT_ID)
+          ARM_SUBSCRIPTION_ID: $(SUBSCRIPTION_ID)
+
+      # Publish the artifact from the previous task.
+      - task: PublishBuildArtifacts@1
+        displayName: "Publish Terraform Artifacts"
+        inputs:
+          pathtoPublish: "$(Build.ArtifactStagingDirectory)"
+          artifactName: "${{ parameters.Environment }}-terraform-plan"

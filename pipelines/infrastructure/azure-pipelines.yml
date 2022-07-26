@@ -1,0 +1,53 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - 'main'
+    exclude:
+      - 'release/*'
+  paths:
+    include:
+      - pipelines/infrastructure/*
+      - terraform/*
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - name: terraformVersion
+    value: '1.1.2'
+
+stages:
+# Call the appropriate pipeline template for each application.
+  - stage: 'Terraform_Plan'
+    displayName: 'Terraform Plan'
+    jobs:
+    - template: templates/terraform-install-init-plan.yml
+      parameters:
+        terraformVersion: ${{ variables.terraformVersion }}
+        ServiceConnection: 'sc-omes-demo-001'
+        Environment: 'dev'
+
+    - template: templates/terraform-install-init-plan.yml
+      parameters:
+        terraformVersion: ${{ variables.terraformVersion }}
+        ServiceConnection: 'sc-omes-demo-001'
+        Environment: 'prod'
+
+  - stage: 'Terraform_Apply_Dev'
+    displayName: 'Terraform Apply Dev'
+    jobs:
+    - template: templates/terraform-apply.yml
+      parameters:
+        terraformVersion: ${{ variables.terraformVersion }}
+        ServiceConnection: 'sc-omes-demo-001'
+        Environment: 'dev'
+
+  - stage: 'Terraform_Apply_Prod'
+    displayName: 'Terraform Apply Prod'
+    jobs:
+    - template: templates/terraform-apply.yml
+      parameters:
+        terraformVersion: ${{ variables.terraformVersion }}
+        ServiceConnection: 'sc-omes-demo-001'
+        Environment: 'prod'
